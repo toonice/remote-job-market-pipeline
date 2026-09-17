@@ -53,6 +53,21 @@ DATA_ROLE_RE = re.compile(
 )
 
 
+# Geo strings Jobicy uses for roles that usually work from the UK / Europe / Anywhere.
+UK_FRIENDLY_RE = re.compile(
+    r"anywhere|worldwide|global|united\s*kingdom|\buk\b|britain|"
+    r"england|scotland|wales|europe|\beu\b|emea|remote",
+    re.IGNORECASE,
+)
+
+
+def is_uk_friendly_location(location: str) -> bool:
+    loc = (location or "").strip()
+    if not loc:
+        return False
+    return bool(UK_FRIENDLY_RE.search(loc))
+
+
 def setup_logging() -> logging.Logger:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log = logging.getLogger("pipeline")
@@ -297,7 +312,9 @@ def load_to_sqlite(df: pd.DataFrame, path: Path) -> None:
 
 
 def export_csv(path: Path, csv_path: Path = CSV_PATH) -> pd.DataFrame:
+    """Export Tableau CSV filtered to Anywhere / UK / Europe / EMEA geos."""
     csv_path.parent.mkdir(parents=True, exist_ok=True)
+    full_path = csv_path.parent / "remote_jobs_tableau_all.csv"
     conn = sqlite3.connect(str(path))
     try:
         df = pd.read_sql_query(
@@ -323,9 +340,14 @@ def export_csv(path: Path, csv_path: Path = CSV_PATH) -> pd.DataFrame:
     finally:
         conn.close()
 
-    df.to_csv(csv_path, index=False)
-    log.info("csv → %s (%s rows)", csv_path, len(df))
-    return df
+    df.to_csv(full_path, index=False)
+    uk = df[df["location"].fillna("").map(is_uk_friendly_location)].copy()
+    uk.to_csv(csv_path, index=False)
+    log.info(
+        "csv → %s (%s UK-friendly rows; full dump %s rows at %s)",
+        csv_path, len(uk), len(df), full_path.name,
+    )
+    return uk
 
 
 def maybe_publish_tableau(csv_path: Path) -> None:

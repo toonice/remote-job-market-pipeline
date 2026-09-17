@@ -46,7 +46,8 @@ python pipeline.py
 You'll get:
 
 - `remote_jobs.db` — I keep this in the repo so recruiters can open it without running anything  
-- `data/remote_jobs_tableau.csv` — drop into Tableau Public / Desktop  
+- `data/remote_jobs_tableau.csv` — UK-friendly geos only (Anywhere / UK / Europe / EMEA); drop into Tableau Public / Desktop
+- `data/remote_jobs_tableau_all.csv` — full Jobicy pull if you want everything  
 - `logs/pipeline.log` — whatever happened on the last run  
 
 `DB_PATH` defaults to `./remote_jobs.db` if you want it elsewhere.
