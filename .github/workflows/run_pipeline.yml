@@ -33,6 +33,8 @@ jobs:
           TABLEAU_TOKEN_VALUE: ${{ secrets.TABLEAU_TOKEN_VALUE }}
           TABLEAU_PROJECT_NAME: ${{ secrets.TABLEAU_PROJECT_NAME }}
           TABLEAU_DATASOURCE_NAME: ${{ secrets.TABLEAU_DATASOURCE_NAME }}
+          ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
+          ADZUNA_APP_KEY: ${{ secrets.ADZUNA_APP_KEY }}
         run: python pipeline.py
 
       - name: Commit updated data
@@ -40,7 +42,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           mkdir -p logs data
-          git add remote_jobs.db data/remote_jobs_tableau.csv || true
+          git add remote_jobs.db \
+            data/remote_jobs_tableau.csv \
+            data/remote_jobs_tableau_all.csv \
+            data/remote_jobs_junior_uk.csv || true
           if [ -f logs/pipeline.log ]; then
             git add -f logs/pipeline.log || true
           fi
