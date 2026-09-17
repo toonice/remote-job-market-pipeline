@@ -28,6 +28,8 @@ Jobicy (+ Remotive / RemoteOK / Arbeitnow [/ Adzuna])
               GitHub Actions (daily + manual)
 ```
 
+Sources: Jobicy, Remotive, RemoteOK, Arbeitnow, and SimplyHired UK (graduate / junior data analyst searches — this is how UK board ads like Escentral land in the CSV).
+
 1. **Extract** — Jobicy first (`count=100`, then `tag=data`). Also Remotive (`category=data` + `search=junior data analyst`), Remote OK (skip the metadata row), Arbeitnow (a few pages). Adzuna UK only if `ADZUNA_APP_ID` + `ADZUNA_APP_KEY` are set  
 2. **Transform** — normalise into one shape; prefix `job_id` by source (`jobicy_123`, `remotive_456`, …); regex for SQL, Python, Power BI, Tableau, Excel, Snowflake, dbt; flag likely data roles; rough salary parse where boards only give text  
 3. **Load** — SQLite upsert (companies by name, jobs by id). Each run replaces the job snapshot so ids stay clean  

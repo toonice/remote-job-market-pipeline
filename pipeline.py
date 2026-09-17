@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -30,6 +31,7 @@ JOBICY_URL = "https://jobicy.com/api/v2/remote-jobs"
 REMOTIVE_URL = "https://remotive.com/api/remote-jobs"
 REMOTEOK_URL = "https://remoteok.com/api"
 ARBEITNOW_URL = "https://www.arbeitnow.com/api/job-board-api"
+SIMPLYHIRED_UK = "https://www.simplyhired.co.uk/search"
 ADZUNA_URL = "https://api.adzuna.com/v1/api/jobs/gb/search/1"
 
 FETCH_COUNT = 100
@@ -416,6 +418,33 @@ def make_row(
 # Extractors
 # ---------------------------------------------------------------------------
 
+def parse_salary_blob(blob: str) -> tuple[Optional[float], Optional[float], Optional[str]]:
+    """Parse strings like '£32,000 a year' or '£25,000 - £30,000 per annum'."""
+    if not blob:
+        return None, None, None
+    text = blob.replace(",", "").strip()
+    currency = None
+    if "£" in blob or re.search(r"GBP", blob, re.I):
+        currency = "GBP"
+    elif "$" in blob or re.search(r"USD", blob, re.I):
+        currency = "USD"
+    elif "€" in blob or re.search(r"EUR", blob, re.I):
+        currency = "EUR"
+
+    nums = [float(x) for x in re.findall(r"(\d+(?:\.\d+)?)", text)]
+    # drop tiny numbers that are clearly not salaries (ratings etc.)
+    nums = [n for n in nums if n >= 1000]
+    if not nums:
+        return None, None, currency
+    # monthly → annual if labelled monthly and value looks monthly
+    if re.search(r"month", blob, re.I) and nums and max(nums) < 20000:
+        nums = [n * 12 for n in nums]
+    if len(nums) == 1:
+        return nums[0], nums[0], currency
+    return min(nums), max(nums), currency
+
+
+
 def fetch_jobicy(session: requests.Session) -> list[dict[str, Any]]:
     by_id: dict[str, dict[str, Any]] = {}
 
@@ -693,6 +722,98 @@ def fetch_adzuna(session: requests.Session) -> list[dict[str, Any]]:
     return rows
 
 
+
+def fetch_simplyhired_uk(session: requests.Session) -> list[dict[str, Any]]:
+    """UK graduate / junior DA board — this is how roles like Escentral show up."""
+    queries = [
+        "graduate data analyst",
+        "junior data analyst",
+        "entry level data analyst",
+        "graduate analyst data",
+    ]
+    ingested = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    by_key: dict[str, dict[str, Any]] = {}
+
+    for q in queries:
+        params = {"q": q, "l": "United Kingdom"}
+        log.info("GET %s %s", SIMPLYHIRED_UK, params)
+        try:
+            resp = session.get(SIMPLYHIRED_UK, params=params, timeout=TIMEOUT)
+        except requests.RequestException as exc:
+            log.warning("SimplyHired request failed (%s): %s", q, exc)
+            continue
+        if resp.status_code != 200:
+            log.warning("SimplyHired non-200 for %r: %s", q, resp.status_code)
+            continue
+        m = re.search(
+            r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
+            resp.text,
+        )
+        if not m:
+            log.warning("SimplyHired: no __NEXT_DATA__ for %r", q)
+            continue
+        try:
+            payload = json.loads(m.group(1))
+        except json.JSONDecodeError as exc:
+            log.warning("SimplyHired JSON parse failed for %r: %s", q, exc)
+            continue
+        jobs = (
+            payload.get("props", {})
+            .get("pageProps", {})
+            .get("jobs")
+            or []
+        )
+        log.info("SimplyHired %r → %s cards", q, len(jobs))
+        for job in jobs:
+            key = str(job.get("jobKey") or "").strip()
+            if not key:
+                continue
+            title = (job.get("title") or "").strip()
+            company = (job.get("company") or "").strip()
+            location = (job.get("location") or "").strip()
+            snippet = job.get("snippet") or ""
+            uncategorized = job.get("uncategorized") or []
+            remote_attrs = job.get("remoteAttributes") or []
+            tags = " ".join([*(job.get("requirements") or []), *uncategorized, *remote_attrs])
+            description = (snippet + "\n" + tags).strip()
+            # Graduate / Junior from chips
+            level = ""
+            chips = " ".join(uncategorized).lower()
+            if "graduate" in chips or "graduate" in title.lower():
+                level = "Graduate"
+            elif "junior" in chips or "junior" in title.lower() or "entry" in chips:
+                level = "Entry-Level, Junior"
+            bot = job.get("botUrl") or f"/job/{key}"
+            url = "https://www.simplyhired.co.uk" + bot
+            smin, smax, scur = parse_salary_blob(job.get("salaryInfo") or "")
+            # Prefer Remote in location when remoteAttributes / Remote label present
+            if not location and remote_attrs:
+                location = ", ".join(remote_attrs)
+            row = make_row(
+                source="simplyhired",
+                raw_id=key,
+                title=title,
+                company=company,
+                location=location or "United Kingdom",
+                description=description,
+                industry="Data / Analytics",
+                job_type=", ".join(job.get("jobTypes") or []) or "Full-time",
+                job_level=level,
+                url=url,
+                date_posted=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                salary_min=smin,
+                salary_max=smax,
+                salary_currency=scur,
+                ingested=ingested,
+            )
+            if row:
+                by_key[key] = row
+
+    rows = list(by_key.values())
+    log.info("SimplyHired unique → %s", len(rows))
+    return rows
+
+
 def extract_all() -> tuple[list[dict[str, Any]], dict[str, int]]:
     session = make_session()
     counts: dict[str, int] = {}
@@ -712,6 +833,7 @@ def extract_all() -> tuple[list[dict[str, Any]], dict[str, int]]:
         ("remoteok", fetch_remoteok),
         ("arbeitnow", fetch_arbeitnow),
         ("adzuna", fetch_adzuna),
+        ("simplyhired", fetch_simplyhired_uk),
     ):
         try:
             rows = fn(session)
