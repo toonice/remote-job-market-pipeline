@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pull remote jobs from Jobicy, clean them up, stash in SQLite, export CSV for Tableau."""
+"""Pull remote jobs from a few free boards, clean them up, stash in SQLite, export CSV for Tableau."""
 
 from __future__ import annotations
 
@@ -22,12 +22,33 @@ ROOT = Path(__file__).resolve().parent
 SCHEMA_PATH = ROOT / "schema.sql"
 DEFAULT_DB = ROOT / "remote_jobs.db"
 CSV_PATH = ROOT / "data" / "remote_jobs_tableau.csv"
+JUNIOR_CSV_PATH = ROOT / "data" / "remote_jobs_junior_uk.csv"
 LOG_DIR = ROOT / "logs"
 LOG_FILE = LOG_DIR / "pipeline.log"
 
 JOBICY_URL = "https://jobicy.com/api/v2/remote-jobs"
+REMOTIVE_URL = "https://remotive.com/api/remote-jobs"
+REMOTEOK_URL = "https://remoteok.com/api"
+ARBEITNOW_URL = "https://www.arbeitnow.com/api/job-board-api"
+ADZUNA_URL = "https://api.adzuna.com/v1/api/jobs/gb/search/1"
+
 FETCH_COUNT = 100
 TIMEOUT = 30
+ARBEITNOW_PAGES = 3  # 250 each — enough without hammering their free API
+
+# Rough FX → GBP for the salary ceiling check
+FX_TO_GBP = {
+    "GBP": 1.0,
+    "£": 1.0,
+    "USD": 0.78,
+    "$": 0.78,
+    "EUR": 0.86,
+    "€": 0.86,
+    "CAD": 0.57,
+    "C$": 0.57,
+}
+
+SALARY_CEILING_GBP = 35000.0
 
 # Canonical name → pattern. Power BI gets a few spellings because people write it every which way.
 SKILL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
@@ -52,11 +73,36 @@ DATA_ROLE_RE = re.compile(
     re.IGNORECASE,
 )
 
-
-# Geo strings Jobicy uses for roles that usually work from the UK / Europe / Anywhere.
+# Geos that usually work from the UK / Europe / Anywhere.
 UK_FRIENDLY_RE = re.compile(
     r"anywhere|worldwide|global|united\s*kingdom|\buk\b|britain|"
     r"england|scotland|wales|europe|\beu\b|emea|remote",
+    re.IGNORECASE,
+)
+
+UK_STRICT_RE = re.compile(
+    r"united\s*kingdom|\buk\b|britain|england|scotland|wales|london|"
+    r"anywhere|worldwide|global|europe|\beu\b|emea|remote",
+    re.IGNORECASE,
+)
+
+JUNIOR_RE = re.compile(
+    r"\b(junior|entry[\s\-]?level|entry|graduate|grad|intern|internship|"
+    r"trainee|apprentice|early[\s\-]?career)\b"
+    r"|\bassociate\b(?!\s+director)",
+    re.IGNORECASE,
+)
+
+SENIOR_RE = re.compile(
+    r"\b(senior|sr\.?|lead|director|manager|staff|principal|head\s+of|"
+    r"vp|vice\s+president|chief)\b",
+    re.IGNORECASE,
+)
+
+# Remotive / free-text salary strings: "$170k - $200k", "£30,000 – £35,000", "OTE $25k"
+SALARY_NUM_RE = re.compile(
+    r"(?P<cur>£|\$|€|USD|EUR|GBP|CAD)?\s*"
+    r"(?P<num>\d+(?:[.,]\d+)?)\s*(?P<suffix>[kKmM])?",
     re.IGNORECASE,
 )
 
@@ -66,6 +112,13 @@ def is_uk_friendly_location(location: str) -> bool:
     if not loc:
         return False
     return bool(UK_FRIENDLY_RE.search(loc))
+
+
+def is_uk_strict_location(location: str) -> bool:
+    loc = (location or "").strip()
+    if not loc:
+        return False
+    return bool(UK_STRICT_RE.search(loc))
 
 
 def setup_logging() -> logging.Logger:
@@ -104,49 +157,6 @@ def make_session() -> requests.Session:
     return session
 
 
-def fetch_jobs(count: int = FETCH_COUNT, tag: Optional[str] = None) -> list[dict[str, Any]]:
-    params: dict[str, Any] = {"count": count}
-    if tag:
-        params["tag"] = tag
-
-    session = make_session()
-    log.info("GET %s %s", JOBICY_URL, params)
-    try:
-        resp = session.get(JOBICY_URL, params=params, timeout=TIMEOUT)
-    except requests.RequestException as exc:
-        log.error("request failed: %s", exc)
-        raise
-
-    if resp.status_code != 200:
-        log.error("non-200 from Jobicy: %s %s", resp.status_code, resp.text[:500])
-        resp.raise_for_status()
-
-    payload = resp.json()
-    jobs = payload.get("jobs") or []
-    log.info("got %s jobs (jobCount=%s)", len(jobs), payload.get("jobCount"))
-    return jobs
-
-
-def extract_all() -> list[dict[str, Any]]:
-    # Broad pull first, then tag=data so analytics roles aren't under-represented.
-    by_id: dict[str, dict[str, Any]] = {}
-    for job in fetch_jobs(count=FETCH_COUNT):
-        jid = str(job.get("id", ""))
-        if jid:
-            by_id[jid] = job
-
-    try:
-        for job in fetch_jobs(count=FETCH_COUNT, tag="data"):
-            jid = str(job.get("id", ""))
-            if jid:
-                by_id[jid] = job
-    except Exception as exc:
-        log.warning("tag=data fetch failed, keeping broad set only: %s", exc)
-
-    log.info("unique jobs after merge: %s", len(by_id))
-    return list(by_id.values())
-
-
 def join_list(value: Any) -> str:
     if value is None:
         return ""
@@ -158,9 +168,20 @@ def join_list(value: Any) -> str:
 def normalize_date(pub_date: Any) -> str:
     if pub_date is None or (isinstance(pub_date, float) and pd.isna(pub_date)):
         return ""
+    # epoch seconds (Arbeitnow)
+    if isinstance(pub_date, (int, float)) and pub_date > 1_000_000_000:
+        try:
+            return datetime.fromtimestamp(int(pub_date), tz=timezone.utc).strftime("%Y-%m-%d")
+        except (ValueError, OSError, OverflowError):
+            pass
     text = str(pub_date).strip()
     if not text:
         return ""
+    if text.isdigit() and len(text) >= 10:
+        try:
+            return datetime.fromtimestamp(int(text), tz=timezone.utc).strftime("%Y-%m-%d")
+        except (ValueError, OSError, OverflowError):
+            pass
     try:
         return date_parser.parse(text).strftime("%Y-%m-%d")
     except (ValueError, TypeError, OverflowError):
@@ -185,61 +206,539 @@ def flag_data_role(title: str, description: str, industry: str, skills: str) -> 
     return 0
 
 
-def transform(raw_jobs: list[dict[str, Any]]) -> pd.DataFrame:
+def _parse_salary_token(num: str, suffix: str | None) -> Optional[float]:
+    try:
+        cleaned = num.strip()
+        # European-ish "31,2" → 31.2 when there's a single decimal comma
+        if cleaned.count(".") == 0 and cleaned.count(",") == 1:
+            cleaned = cleaned.replace(",", ".")
+        else:
+            cleaned = cleaned.replace(",", "")
+        val = float(cleaned)
+    except ValueError:
+        return None
+    if suffix:
+        s = suffix.lower()
+        if s == "k":
+            val *= 1000
+        elif s == "m":
+            val *= 1_000_000
+    return val
+
+
+def parse_salary_text(text: Any) -> tuple[Optional[float], Optional[float], Optional[str]]:
+    """Best-effort parse of free-text salaries. Skips obvious hourly figures."""
+    if text is None:
+        return None, None, None
+    raw = str(text).strip()
+    if not raw:
+        return None, None, None
+    lower = raw.lower()
+    if "/hour" in lower or "/hr" in lower or "per hour" in lower or "p/h" in lower:
+        return None, None, None
+
+    currency = None
+    for token, code in (("£", "GBP"), ("€", "EUR"), ("$", "USD"), ("gbp", "GBP"), ("usd", "USD"), ("eur", "EUR"), ("cad", "CAD")):
+        if token in lower or token in raw:
+            currency = code
+            break
+
+    amounts: list[float] = []
+    for m in SALARY_NUM_RE.finditer(raw):
+        # skip tiny numbers that are probably years / percentages when no k/m
+        num = m.group("num")
+        suffix = m.group("suffix")
+        val = _parse_salary_token(num, suffix)
+        if val is None:
+            continue
+        if suffix is None and val < 1000:
+            continue
+        amounts.append(val)
+        cur = m.group("cur")
+        if cur and not currency:
+            currency = FX_TO_GBP_KEY(cur)
+
+    if not amounts:
+        return None, None, currency
+    return min(amounts), max(amounts), currency
+
+
+def FX_TO_GBP_KEY(cur: str) -> str:
+    c = cur.strip().upper()
+    if c in ("$", "USD"):
+        return "USD"
+    if c in ("£", "GBP"):
+        return "GBP"
+    if c in ("€", "EUR"):
+        return "EUR"
+    if c in ("C$", "CAD"):
+        return "CAD"
+    return c
+
+
+def to_float(value: Any) -> Optional[float]:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def salary_midpoint_gbp(
+    salary_min: Optional[float],
+    salary_max: Optional[float],
+    currency: Optional[str],
+) -> Optional[float]:
+    if salary_min is None and salary_max is None:
+        return None
+    if salary_min is not None and salary_max is not None:
+        mid = (salary_min + salary_max) / 2.0
+    else:
+        mid = salary_min if salary_min is not None else salary_max
+    assert mid is not None
+
+    cur = (currency or "").strip().upper()
+    if not cur:
+        # RemoteOK etc. often omit currency — treat as USD for the ceiling check
+        rate = FX_TO_GBP["USD"]
+    elif cur in FX_TO_GBP:
+        rate = FX_TO_GBP[cur]
+    elif cur in ("£", "$", "€"):
+        rate = FX_TO_GBP[cur]
+    else:
+        # unknown currency (PLN, INR…) — don't invent a rate; leave unknown
+        return None
+    return mid * rate
+
+
+def passes_salary_ceiling(
+    salary_min: Optional[float],
+    salary_max: Optional[float],
+    currency: Optional[str],
+) -> bool:
+    """Keep if salary missing/unknown, or GBP midpoint <= ceiling."""
+    mid = salary_midpoint_gbp(salary_min, salary_max, currency)
+    if mid is None:
+        # missing salary OR unknown FX — keep
+        if salary_min is None and salary_max is None:
+            return True
+        return True
+    return mid <= SALARY_CEILING_GBP
+
+
+def is_juniorish(title: str, job_level: str) -> bool:
+    level = (job_level or "").strip().lower()
+    if level in ("entry", "junior", "internship", "intern", "graduate", "associate", "trainee"):
+        return True
+    if "entry" in level or "junior" in level:
+        return True
+    text = f"{title} {job_level}"
+    if JUNIOR_RE.search(text):
+        return True
+    # Prefer non-senior titles when level isn't explicitly senior
+    if SENIOR_RE.search(title or ""):
+        return False
+    if level in ("senior", "lead", "manager", "director", "staff", "principal"):
+        return False
+    return True
+
+
+def is_strict_junior(title: str, job_level: str) -> bool:
+    """Stricter — used for the applications CSV."""
+    level = (job_level or "").strip().lower()
+    title = title or ""
+    # Director / manager / lead etc. are not junior even if "associate" appears
+    if SENIOR_RE.search(title) and not re.search(
+        r"\b(junior|entry|graduate|grad|intern|internship|trainee|apprentice)\b",
+        title,
+        re.IGNORECASE,
+    ):
+        return False
+    if level in ("entry", "junior", "internship", "intern", "graduate", "associate", "trainee"):
+        return True
+    if "entry" in level or "junior" in level:
+        return True
+    return bool(JUNIOR_RE.search(f"{title} {job_level}"))
+
+
+def make_row(
+    *,
+    source: str,
+    raw_id: Any,
+    title: str,
+    company: str,
+    location: str,
+    description: str,
+    industry: str,
+    job_type: str,
+    job_level: str,
+    url: str,
+    date_posted: str,
+    salary_min: Optional[float],
+    salary_max: Optional[float],
+    salary_currency: Optional[str],
+    ingested: str,
+) -> Optional[dict[str, Any]]:
+    rid = str(raw_id or "").strip()
+    if not rid:
+        return None
+    job_id = f"{source}_{rid}"
+    title = (title or "").strip()
+    company = (company or "").strip() or "Unknown"
+    location = (location or "").strip()
+    description = description or ""
+    industry = industry or ""
+    skills = extract_skills(f"{title}\n{description}\n{industry}")
+    is_data = flag_data_role(title, description, industry, skills)
+    return {
+        "job_id": job_id,
+        "source": source,
+        "title": title,
+        "company_name": company,
+        "location": location,
+        "date_posted": date_posted,
+        "description": description,
+        "extracted_skills": skills,
+        "url": (url or "").strip(),
+        "industry": industry,
+        "job_type": job_type or "",
+        "job_level": (job_level or "").strip(),
+        "salary_min": salary_min,
+        "salary_max": salary_max,
+        "salary_currency": (salary_currency or "").strip() or None,
+        "is_data_role": is_data,
+        "ingested_at": ingested,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Extractors
+# ---------------------------------------------------------------------------
+
+def fetch_jobicy(session: requests.Session) -> list[dict[str, Any]]:
+    by_id: dict[str, dict[str, Any]] = {}
+
+    def _one(tag: Optional[str] = None) -> None:
+        params: dict[str, Any] = {"count": FETCH_COUNT}
+        if tag:
+            params["tag"] = tag
+        log.info("GET %s %s", JOBICY_URL, params)
+        resp = session.get(JOBICY_URL, params=params, timeout=TIMEOUT)
+        if resp.status_code != 200:
+            log.error("non-200 from Jobicy: %s %s", resp.status_code, resp.text[:500])
+            resp.raise_for_status()
+        jobs = resp.json().get("jobs") or []
+        log.info("Jobicy%s → %s jobs", f" tag={tag}" if tag else "", len(jobs))
+        for job in jobs:
+            jid = str(job.get("id", ""))
+            if jid:
+                by_id[jid] = job
+
+    _one()
+    try:
+        _one(tag="data")
+    except Exception as exc:
+        log.warning("Jobicy tag=data failed, keeping broad set: %s", exc)
+
     ingested = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     rows: list[dict[str, Any]] = []
+    for job in by_id.values():
+        try:
+            smin = float(job["salaryMin"]) if job.get("salaryMin") is not None else None
+        except (TypeError, ValueError):
+            smin = None
+        try:
+            smax = float(job["salaryMax"]) if job.get("salaryMax") is not None else None
+        except (TypeError, ValueError):
+            smax = None
+        row = make_row(
+            source="jobicy",
+            raw_id=job.get("id"),
+            title=str(job.get("jobTitle") or ""),
+            company=str(job.get("companyName") or ""),
+            location=str(job.get("jobGeo") or ""),
+            description=str(job.get("jobDescription") or job.get("jobExcerpt") or ""),
+            industry=join_list(job.get("jobIndustry")),
+            job_type=join_list(job.get("jobType")),
+            job_level=str(job.get("jobLevel") or ""),
+            url=str(job.get("url") or ""),
+            date_posted=normalize_date(job.get("pubDate")),
+            salary_min=smin,
+            salary_max=smax,
+            salary_currency=str(job.get("salaryCurrency") or "") or None,
+            ingested=ingested,
+        )
+        if row:
+            rows.append(row)
+    return rows
 
-    for job in raw_jobs:
-        job_id = str(job.get("id", "")).strip()
-        if not job_id:
+
+def fetch_remotive(session: requests.Session) -> list[dict[str, Any]]:
+    by_id: dict[str, dict[str, Any]] = {}
+    queries = [
+        {"category": "data"},
+        {"search": "junior data analyst"},
+    ]
+    for params in queries:
+        log.info("GET %s %s", REMOTIVE_URL, params)
+        try:
+            resp = session.get(REMOTIVE_URL, params=params, timeout=TIMEOUT)
+        except requests.RequestException as exc:
+            log.warning("Remotive request failed: %s", exc)
             continue
+        if resp.status_code != 200:
+            log.warning("Remotive non-200: %s %s", resp.status_code, resp.text[:300])
+            continue
+        jobs = resp.json().get("jobs") or []
+        log.info("Remotive %s → %s jobs", params, len(jobs))
+        for job in jobs:
+            jid = str(job.get("id", ""))
+            if jid:
+                by_id[jid] = job
 
-        title = str(job.get("jobTitle") or "").strip()
-        company = str(job.get("companyName") or "").strip() or "Unknown"
-        location = str(job.get("jobGeo") or "").strip()
-        description = str(job.get("jobDescription") or job.get("jobExcerpt") or "")
-        industry = join_list(job.get("jobIndustry"))
-        job_type = join_list(job.get("jobType"))
-        job_level = str(job.get("jobLevel") or "").strip()
-        url = str(job.get("url") or "").strip()
-        date_posted = normalize_date(job.get("pubDate"))
+    ingested = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rows: list[dict[str, Any]] = []
+    for job in by_id.values():
+        smin, smax, scur = parse_salary_text(job.get("salary"))
+        row = make_row(
+            source="remotive",
+            raw_id=job.get("id"),
+            title=str(job.get("title") or ""),
+            company=str(job.get("company_name") or ""),
+            location=str(job.get("candidate_required_location") or ""),
+            description=str(job.get("description") or ""),
+            industry=str(job.get("category") or ""),
+            job_type=str(job.get("job_type") or ""),
+            job_level="",
+            url=str(job.get("url") or ""),
+            date_posted=normalize_date(job.get("publication_date")),
+            salary_min=smin,
+            salary_max=smax,
+            salary_currency=scur,
+            ingested=ingested,
+        )
+        if row:
+            rows.append(row)
+    return rows
 
-        skills = extract_skills(f"{title}\n{description}\n{industry}")
-        is_data = flag_data_role(title, description, industry, skills)
 
+def fetch_remoteok(session: requests.Session) -> list[dict[str, Any]]:
+    log.info("GET %s", REMOTEOK_URL)
+    try:
+        resp = session.get(REMOTEOK_URL, timeout=TIMEOUT)
+    except requests.RequestException as exc:
+        log.warning("RemoteOK request failed: %s", exc)
+        return []
+    if resp.status_code != 200:
+        log.warning("RemoteOK non-200: %s %s", resp.status_code, resp.text[:300])
+        return []
+
+    payload = resp.json()
+    if not isinstance(payload, list) or len(payload) < 2:
+        log.warning("RemoteOK unexpected payload")
+        return []
+
+    # First element is metadata — skip it
+    jobs = [j for j in payload[1:] if isinstance(j, dict) and j.get("id")]
+    log.info("RemoteOK → %s jobs", len(jobs))
+
+    ingested = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rows: list[dict[str, Any]] = []
+    for job in jobs:
+        tags = join_list(job.get("tags"))
+        smin = to_float(job.get("salary_min"))
+        smax = to_float(job.get("salary_max"))
+        # RemoteOK rarely sets currency; assume USD when a number is present
+        scur = str(job.get("salary_currency") or "").strip() or ("USD" if smin or smax else None)
+        row = make_row(
+            source="remoteok",
+            raw_id=job.get("id"),
+            title=str(job.get("position") or job.get("title") or ""),
+            company=str(job.get("company") or ""),
+            location=str(job.get("location") or "") or "Remote",
+            description=str(job.get("description") or ""),
+            industry=tags,
+            job_type="",
+            job_level="",
+            url=str(job.get("url") or job.get("apply_url") or ""),
+            date_posted=normalize_date(job.get("date") or job.get("epoch")),
+            salary_min=smin,
+            salary_max=smax,
+            salary_currency=scur,
+            ingested=ingested,
+        )
+        if row:
+            rows.append(row)
+    return rows
+
+
+def fetch_arbeitnow(session: requests.Session) -> list[dict[str, Any]]:
+    by_slug: dict[str, dict[str, Any]] = {}
+    for page in range(1, ARBEITNOW_PAGES + 1):
+        params = {"page": page}
+        log.info("GET %s %s", ARBEITNOW_URL, params)
         try:
-            salary_min = float(job["salaryMin"]) if job.get("salaryMin") is not None else None
-        except (TypeError, ValueError):
-            salary_min = None
+            resp = session.get(ARBEITNOW_URL, params=params, timeout=TIMEOUT)
+        except requests.RequestException as exc:
+            log.warning("Arbeitnow page %s failed: %s", page, exc)
+            break
+        if resp.status_code != 200:
+            log.warning("Arbeitnow non-200: %s %s", resp.status_code, resp.text[:300])
+            break
+        payload = resp.json()
+        jobs = payload.get("data") or []
+        log.info("Arbeitnow page %s → %s jobs", page, len(jobs))
+        if not jobs:
+            break
+        for job in jobs:
+            slug = str(job.get("slug") or "")
+            if slug:
+                by_slug[slug] = job
+        # stop early if no next page
+        links = payload.get("links") or {}
+        if not links.get("next"):
+            break
+
+    ingested = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rows: list[dict[str, Any]] = []
+    for job in by_slug.values():
+        loc = str(job.get("location") or "").strip()
+        if job.get("remote"):
+            loc = f"{loc}, Remote".strip(", ") if loc else "Remote"
+        tags = join_list(job.get("tags"))
+        job_types = join_list(job.get("job_types"))
+        row = make_row(
+            source="arbeitnow",
+            raw_id=job.get("slug"),
+            title=str(job.get("title") or ""),
+            company=str(job.get("company_name") or ""),
+            location=loc,
+            description=str(job.get("description") or ""),
+            industry=tags,
+            job_type=job_types,
+            job_level="",
+            url=str(job.get("url") or ""),
+            date_posted=normalize_date(job.get("created_at")),
+            salary_min=None,
+            salary_max=None,
+            salary_currency=None,
+            ingested=ingested,
+        )
+        if row:
+            rows.append(row)
+    return rows
+
+
+def fetch_adzuna(session: requests.Session) -> list[dict[str, Any]]:
+    app_id = (os.environ.get("ADZUNA_APP_ID") or "").strip()
+    app_key = (os.environ.get("ADZUNA_APP_KEY") or "").strip()
+    if not app_id or not app_key:
+        log.info("ADZUNA_APP_ID / ADZUNA_APP_KEY not set — skipping Adzuna")
+        return []
+
+    params = {
+        "app_id": app_id,
+        "app_key": app_key,
+        "what": "junior data analyst",
+        "where": "uk",
+        "results_per_page": 50,
+        "content-type": "application/json",
+    }
+    log.info("GET %s what=%s where=%s", ADZUNA_URL, params["what"], params["where"])
+    try:
+        resp = session.get(ADZUNA_URL, params=params, timeout=TIMEOUT)
+    except requests.RequestException as exc:
+        log.warning("Adzuna request failed: %s", exc)
+        return []
+    if resp.status_code != 200:
+        log.warning("Adzuna non-200: %s %s", resp.status_code, resp.text[:300])
+        return []
+
+    results = resp.json().get("results") or []
+    log.info("Adzuna → %s jobs", len(results))
+    ingested = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rows: list[dict[str, Any]] = []
+    for job in results:
+        loc_obj = job.get("location") or {}
+        loc_parts = loc_obj.get("display_name") or loc_obj.get("area") or ""
+        if isinstance(loc_parts, list):
+            location = ", ".join(str(p) for p in loc_parts)
+        else:
+            location = str(loc_parts or "UK")
+        # Adzuna UK salaries are GBP
+        smin = to_float(job.get("salary_min"))
+        smax = to_float(job.get("salary_max"))
+        cat = job.get("category") or {}
+        industry = str(cat.get("label") or cat.get("tag") or "")
+        row = make_row(
+            source="adzuna",
+            raw_id=job.get("id"),
+            title=str(job.get("title") or ""),
+            company=str((job.get("company") or {}).get("display_name") or ""),
+            location=location,
+            description=str(job.get("description") or ""),
+            industry=industry,
+            job_type=str(job.get("contract_time") or job.get("contract_type") or ""),
+            job_level="",
+            url=str(job.get("redirect_url") or job.get("adref") or ""),
+            date_posted=normalize_date(job.get("created")),
+            salary_min=smin,
+            salary_max=smax,
+            salary_currency="GBP" if (smin or smax) else None,
+            ingested=ingested,
+        )
+        if row:
+            rows.append(row)
+    return rows
+
+
+def extract_all() -> tuple[list[dict[str, Any]], dict[str, int]]:
+    session = make_session()
+    counts: dict[str, int] = {}
+    all_rows: list[dict[str, Any]] = []
+
+    # Jobicy is primary — fail the run if it dies hard
+    try:
+        jobicy_rows = fetch_jobicy(session)
+    except Exception:
+        log.exception("Jobicy extract failed")
+        raise
+    counts["jobicy"] = len(jobicy_rows)
+    all_rows.extend(jobicy_rows)
+
+    for name, fn in (
+        ("remotive", fetch_remotive),
+        ("remoteok", fetch_remoteok),
+        ("arbeitnow", fetch_arbeitnow),
+        ("adzuna", fetch_adzuna),
+    ):
         try:
-            salary_max = float(job["salaryMax"]) if job.get("salaryMax") is not None else None
-        except (TypeError, ValueError):
-            salary_max = None
+            rows = fn(session)
+        except Exception as exc:
+            log.warning("%s extract failed, continuing: %s", name, exc)
+            rows = []
+        counts[name] = len(rows)
+        all_rows.extend(rows)
 
-        rows.append({
-            "job_id": job_id,
-            "title": title,
-            "company_name": company,
-            "location": location,
-            "date_posted": date_posted,
-            "description": description,
-            "extracted_skills": skills,
-            "url": url,
-            "industry": industry,
-            "job_type": job_type,
-            "job_level": job_level,
-            "salary_min": salary_min,
-            "salary_max": salary_max,
-            "salary_currency": str(job.get("salaryCurrency") or "").strip() or None,
-            "is_data_role": is_data,
-            "ingested_at": ingested,
-        })
+    # de-dupe by prefixed job_id (last write wins)
+    by_id: dict[str, dict[str, Any]] = {}
+    for row in all_rows:
+        by_id[row["job_id"]] = row
 
-    df = pd.DataFrame(rows)
-    if df.empty:
+    log.info(
+        "unique jobs after merge: %s (per source: %s)",
+        len(by_id),
+        ", ".join(f"{k}={v}" for k, v in counts.items()),
+    )
+    return list(by_id.values()), counts
+
+
+def transform(rows: list[dict[str, Any]]) -> pd.DataFrame:
+    if not rows:
         log.warning("transform produced nothing")
-        return df
-
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
     df = df.drop_duplicates(subset=["job_id"], keep="last")
     log.info("transformed %s jobs (%s data-ish)", len(df), int(df["is_data_role"].sum()))
     return df
@@ -259,12 +758,15 @@ def load_to_sqlite(df: pd.DataFrame, path: Path) -> None:
     conn = sqlite3.connect(str(path))
     try:
         apply_schema(conn)
+        # Fresh snapshot each run so old unprefixed Jobicy ids don't linger
+        conn.execute("DELETE FROM job_postings")
+        conn.commit()
+
         if df.empty:
             return
 
         n = 0
         for _, row in df.iterrows():
-            # INSERT OR IGNORE so re-runs don't blow up on UNIQUE company_name
             conn.execute(
                 "INSERT OR IGNORE INTO companies (company_name) VALUES (?)",
                 (row["company_name"],),
@@ -274,7 +776,6 @@ def load_to_sqlite(df: pd.DataFrame, path: Path) -> None:
                 (row["company_name"],),
             ).fetchone()[0]
 
-            # REPLACE so description/skills refresh if Jobicy updates the same id
             conn.execute(
                 """
                 INSERT OR REPLACE INTO job_postings (
@@ -311,13 +812,10 @@ def load_to_sqlite(df: pd.DataFrame, path: Path) -> None:
         conn.close()
 
 
-def export_csv(path: Path, csv_path: Path = CSV_PATH) -> pd.DataFrame:
-    """Export Tableau CSV filtered to Anywhere / UK / Europe / EMEA geos."""
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    full_path = csv_path.parent / "remote_jobs_tableau_all.csv"
+def _read_export_frame(path: Path) -> pd.DataFrame:
     conn = sqlite3.connect(str(path))
     try:
-        df = pd.read_sql_query(
+        return pd.read_sql_query(
             """
             SELECT
                 j.job_id, j.title, c.company_name, j.location, j.date_posted,
@@ -340,14 +838,63 @@ def export_csv(path: Path, csv_path: Path = CSV_PATH) -> pd.DataFrame:
     finally:
         conn.close()
 
-    df.to_csv(full_path, index=False)
-    uk = df[df["location"].fillna("").map(is_uk_friendly_location)].copy()
-    uk.to_csv(csv_path, index=False)
-    log.info(
-        "csv → %s (%s UK-friendly rows; full dump %s rows at %s)",
-        csv_path, len(uk), len(df), full_path.name,
+
+def _row_salary_ok(row: pd.Series) -> bool:
+    smin = row["salary_min"] if pd.notna(row["salary_min"]) else None
+    smax = row["salary_max"] if pd.notna(row["salary_max"]) else None
+    scur = row["salary_currency"] if pd.notna(row.get("salary_currency")) else None
+    return passes_salary_ceiling(
+        float(smin) if smin is not None else None,
+        float(smax) if smax is not None else None,
+        str(scur) if scur else None,
     )
-    return uk
+
+
+def export_csv(path: Path, csv_path: Path = CSV_PATH) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Tableau CSV: UK-friendly + junior-ish + salary ceiling. Also write strict junior UK file."""
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    full_path = csv_path.parent / "remote_jobs_tableau_all.csv"
+    junior_path = JUNIOR_CSV_PATH
+
+    df = _read_export_frame(path)
+    df.to_csv(full_path, index=False)
+
+    if df.empty:
+        empty = df.copy()
+        empty.to_csv(csv_path, index=False)
+        empty.to_csv(junior_path, index=False)
+        log.info("csv → empty exports")
+        return empty, empty
+
+    uk_mask = df["location"].fillna("").map(is_uk_friendly_location)
+    # location mentions UK / London remote (already partly covered, keep explicit)
+    uk_london = df["location"].fillna("").str.contains(
+        r"\bUK\b|United\s*Kingdom|London", case=False, regex=True, na=False
+    )
+    geo_ok = uk_mask | uk_london
+
+    junior_mask = df.apply(
+        lambda r: is_juniorish(str(r.get("title") or ""), str(r.get("job_level") or "")),
+        axis=1,
+    )
+    salary_ok = df.apply(_row_salary_ok, axis=1)
+
+    tableau = df[geo_ok & junior_mask & salary_ok].copy()
+    tableau.to_csv(csv_path, index=False)
+
+    strict_junior = df.apply(
+        lambda r: is_strict_junior(str(r.get("title") or ""), str(r.get("job_level") or "")),
+        axis=1,
+    )
+    strict_uk = df["location"].fillna("").map(is_uk_strict_location) | uk_london
+    junior_uk = df[strict_uk & strict_junior & salary_ok].copy()
+    junior_uk.to_csv(junior_path, index=False)
+
+    log.info(
+        "csv → %s (%s rows); junior UK → %s (%s rows); full dump %s rows at %s",
+        csv_path, len(tableau), junior_path, len(junior_uk), len(df), full_path.name,
+    )
+    return tableau, junior_uk
 
 
 def maybe_publish_tableau(csv_path: Path) -> None:
@@ -396,7 +943,6 @@ def maybe_publish_tableau(csv_path: Path) -> None:
             )
             log.info("published datasource %s (%s)", published.name, published.id)
     except Exception as exc:
-        # Don't fail the whole pipeline over Tableau flakiness
         log.error("Tableau publish failed (csv still ok): %s", exc, exc_info=True)
 
 
@@ -417,9 +963,10 @@ def run() -> int:
     path = db_path()
     log.info("DB_PATH=%s", path)
 
-    df = transform(extract_all())
+    rows, source_counts = extract_all()
+    df = transform(rows)
     load_to_sqlite(df, path)
-    out = export_csv(path)
+    tableau_df, junior_df = export_csv(path)
     maybe_publish_tableau(CSV_PATH)
 
     conn = sqlite3.connect(str(path))
@@ -432,9 +979,10 @@ def run() -> int:
     finally:
         conn.close()
 
+    log.info("source counts: %s", source_counts)
     log.info(
-        "done — jobs=%s companies=%s data_roles=%s top_skills=%s",
-        jobs, cos, data, skill_freq(out)[:10],
+        "done — jobs=%s companies=%s data_roles=%s tableau_rows=%s junior_uk_rows=%s top_skills=%s",
+        jobs, cos, data, len(tableau_df), len(junior_df), skill_freq(tableau_df)[:10],
     )
     return 0
 
