@@ -1,0 +1,52 @@
+name: Run Remote Job Pipeline
+
+on:
+  schedule:
+    - cron: '0 9 * * *'  # 09:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run pipeline
+        env:
+          DB_PATH: ./remote_jobs.db
+          TABLEAU_SERVER_URL: ${{ secrets.TABLEAU_SERVER_URL }}
+          TABLEAU_SITE_ID: ${{ secrets.TABLEAU_SITE_ID }}
+          TABLEAU_TOKEN_NAME: ${{ secrets.TABLEAU_TOKEN_NAME }}
+          TABLEAU_TOKEN_VALUE: ${{ secrets.TABLEAU_TOKEN_VALUE }}
+          TABLEAU_PROJECT_NAME: ${{ secrets.TABLEAU_PROJECT_NAME }}
+          TABLEAU_DATASOURCE_NAME: ${{ secrets.TABLEAU_DATASOURCE_NAME }}
+        run: python pipeline.py
+
+      - name: Commit updated data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p logs data
+          git add remote_jobs.db data/remote_jobs_tableau.csv || true
+          if [ -f logs/pipeline.log ]; then
+            git add -f logs/pipeline.log || true
+          fi
+          if git diff --cached --quiet; then
+            echo "No data changes to commit."
+          else
+            git commit -m "refresh job data $(date -u +%Y-%m-%d)"
+            git push
+          fi
