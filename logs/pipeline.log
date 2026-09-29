@@ -383,3 +383,38 @@
 2026-09-28 17:28:04 | INFO     | no TABLEAU_SERVER_URL — skipping publish. CSV is ready for Tableau Public (GitHub raw URL works fine).
 2026-09-28 17:28:04 | INFO     | source counts: {'jobicy': 197, 'remotive': 16, 'remoteok': 99, 'arbeitnow': 751, 'adzuna': 0, 'simplyhired': 0}
 2026-09-28 17:28:04 | INFO     | done — jobs=1063 companies=2361 data_roles=417 tableau_rows=130 junior_uk_rows=15 top_skills=[('Python', 14), ('SQL', 12), ('Excel', 8), ('dbt', 3), ('Snowflake', 2)]
+2026-09-29 15:29:46 | INFO     | pipeline start
+2026-09-29 15:29:46 | INFO     | DB_PATH=/home/runner/work/remote-job-market-pipeline/remote-job-market-pipeline/remote_jobs.db
+2026-09-29 15:29:46 | INFO     | GET https://jobicy.com/api/v2/remote-jobs {'count': 100}
+2026-09-29 15:29:46 | INFO     | Jobicy → 100 jobs
+2026-09-29 15:29:46 | INFO     | GET https://jobicy.com/api/v2/remote-jobs {'count': 100, 'tag': 'data'}
+2026-09-29 15:29:47 | INFO     | Jobicy tag=data → 100 jobs
+2026-09-29 15:29:47 | INFO     | GET https://remotive.com/api/remote-jobs {'category': 'data'}
+2026-09-29 15:29:50 | INFO     | Remotive {'category': 'data'} → 16 jobs
+2026-09-29 15:29:50 | INFO     | GET https://remotive.com/api/remote-jobs {'search': 'junior data analyst'}
+2026-09-29 15:29:50 | INFO     | Remotive {'search': 'junior data analyst'} → 16 jobs
+2026-09-29 15:29:50 | INFO     | GET https://remoteok.com/api
+2026-09-29 15:29:51 | INFO     | RemoteOK → 99 jobs
+2026-09-29 15:29:51 | INFO     | GET https://www.arbeitnow.com/api/job-board-api {'page': 1}
+2026-09-29 15:29:52 | INFO     | Arbeitnow page 1 → 326 jobs
+2026-09-29 15:29:52 | INFO     | GET https://www.arbeitnow.com/api/job-board-api {'page': 2}
+2026-09-29 15:29:52 | INFO     | Arbeitnow page 2 → 325 jobs
+2026-09-29 15:29:52 | INFO     | GET https://www.arbeitnow.com/api/job-board-api {'page': 3}
+2026-09-29 15:29:52 | INFO     | Arbeitnow page 3 → 100 jobs
+2026-09-29 15:29:53 | INFO     | ADZUNA_APP_ID / ADZUNA_APP_KEY not set — skipping Adzuna
+2026-09-29 15:29:53 | INFO     | GET https://www.simplyhired.co.uk/search {'q': 'graduate data analyst', 'l': 'United Kingdom'}
+2026-09-29 15:29:53 | WARNING  | SimplyHired non-200 for 'graduate data analyst': 403
+2026-09-29 15:29:53 | INFO     | GET https://www.simplyhired.co.uk/search {'q': 'junior data analyst', 'l': 'United Kingdom'}
+2026-09-29 15:29:53 | WARNING  | SimplyHired non-200 for 'junior data analyst': 403
+2026-09-29 15:29:53 | INFO     | GET https://www.simplyhired.co.uk/search {'q': 'entry level data analyst', 'l': 'United Kingdom'}
+2026-09-29 15:29:53 | WARNING  | SimplyHired non-200 for 'entry level data analyst': 403
+2026-09-29 15:29:53 | INFO     | GET https://www.simplyhired.co.uk/search {'q': 'graduate analyst data', 'l': 'United Kingdom'}
+2026-09-29 15:29:53 | WARNING  | SimplyHired non-200 for 'graduate analyst data': 403
+2026-09-29 15:29:53 | INFO     | SimplyHired unique → 0
+2026-09-29 15:29:53 | INFO     | unique jobs after merge: 1061 (per source: jobicy=197, remotive=16, remoteok=99, arbeitnow=749, adzuna=0, simplyhired=0)
+2026-09-29 15:29:53 | INFO     | transformed 1061 jobs (444 data-ish)
+2026-09-29 15:29:53 | INFO     | wrote 1061 jobs to /home/runner/work/remote-job-market-pipeline/remote-job-market-pipeline/remote_jobs.db
+2026-09-29 15:29:53 | INFO     | csv → /home/runner/work/remote-job-market-pipeline/remote-job-market-pipeline/data/remote_jobs_tableau.csv (131 rows); junior UK → /home/runner/work/remote-job-market-pipeline/remote-job-market-pipeline/data/remote_jobs_junior_uk.csv (13 rows); full dump 1061 rows at remote_jobs_tableau_all.csv
+2026-09-29 15:29:53 | INFO     | no TABLEAU_SERVER_URL — skipping publish. CSV is ready for Tableau Public (GitHub raw URL works fine).
+2026-09-29 15:29:53 | INFO     | source counts: {'jobicy': 197, 'remotive': 16, 'remoteok': 99, 'arbeitnow': 749, 'adzuna': 0, 'simplyhired': 0}
+2026-09-29 15:29:53 | INFO     | done — jobs=1061 companies=2486 data_roles=444 tableau_rows=131 junior_uk_rows=13 top_skills=[('Python', 27), ('SQL', 16), ('Excel', 5), ('dbt', 4), ('Snowflake', 2), ('Power BI', 1), ('Tableau', 1)]
