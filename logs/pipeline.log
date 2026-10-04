@@ -558,3 +558,38 @@
 2026-10-03 14:13:10 | INFO     | no TABLEAU_SERVER_URL — skipping publish. CSV is ready for Tableau Public (GitHub raw URL works fine).
 2026-10-03 14:13:10 | INFO     | source counts: {'jobicy': 117, 'remotive': 16, 'remoteok': 99, 'arbeitnow': 741, 'adzuna': 0, 'simplyhired': 0}
 2026-10-03 14:13:10 | INFO     | done — jobs=973 companies=2899 data_roles=388 tableau_rows=128 junior_uk_rows=9 top_skills=[('Python', 25), ('Excel', 16), ('SQL', 8)]
+2026-10-04 14:41:45 | INFO     | pipeline start
+2026-10-04 14:41:45 | INFO     | DB_PATH=/home/runner/work/remote-job-market-pipeline/remote-job-market-pipeline/remote_jobs.db
+2026-10-04 14:41:45 | INFO     | GET https://jobicy.com/api/v2/remote-jobs {'count': 100}
+2026-10-04 14:41:45 | INFO     | Jobicy → 100 jobs
+2026-10-04 14:41:45 | INFO     | GET https://jobicy.com/api/v2/remote-jobs {'count': 100, 'tag': 'data'}
+2026-10-04 14:41:45 | INFO     | Jobicy tag=data → 100 jobs
+2026-10-04 14:41:45 | INFO     | GET https://remotive.com/api/remote-jobs {'category': 'data'}
+2026-10-04 14:41:45 | INFO     | Remotive {'category': 'data'} → 18 jobs
+2026-10-04 14:41:45 | INFO     | GET https://remotive.com/api/remote-jobs {'search': 'junior data analyst'}
+2026-10-04 14:41:45 | INFO     | Remotive {'search': 'junior data analyst'} → 18 jobs
+2026-10-04 14:41:45 | INFO     | GET https://remoteok.com/api
+2026-10-04 14:41:46 | INFO     | RemoteOK → 99 jobs
+2026-10-04 14:41:46 | INFO     | GET https://www.arbeitnow.com/api/job-board-api {'page': 1}
+2026-10-04 14:41:46 | INFO     | Arbeitnow page 1 → 325 jobs
+2026-10-04 14:41:46 | INFO     | GET https://www.arbeitnow.com/api/job-board-api {'page': 2}
+2026-10-04 14:41:46 | INFO     | Arbeitnow page 2 → 325 jobs
+2026-10-04 14:41:46 | INFO     | GET https://www.arbeitnow.com/api/job-board-api {'page': 3}
+2026-10-04 14:41:46 | INFO     | Arbeitnow page 3 → 100 jobs
+2026-10-04 14:41:48 | INFO     | ADZUNA_APP_ID / ADZUNA_APP_KEY not set — skipping Adzuna
+2026-10-04 14:41:48 | INFO     | GET https://www.simplyhired.co.uk/search {'q': 'graduate data analyst', 'l': 'United Kingdom'}
+2026-10-04 14:41:48 | WARNING  | SimplyHired non-200 for 'graduate data analyst': 403
+2026-10-04 14:41:48 | INFO     | GET https://www.simplyhired.co.uk/search {'q': 'junior data analyst', 'l': 'United Kingdom'}
+2026-10-04 14:41:48 | WARNING  | SimplyHired non-200 for 'junior data analyst': 403
+2026-10-04 14:41:48 | INFO     | GET https://www.simplyhired.co.uk/search {'q': 'entry level data analyst', 'l': 'United Kingdom'}
+2026-10-04 14:41:48 | WARNING  | SimplyHired non-200 for 'entry level data analyst': 403
+2026-10-04 14:41:48 | INFO     | GET https://www.simplyhired.co.uk/search {'q': 'graduate analyst data', 'l': 'United Kingdom'}
+2026-10-04 14:41:48 | WARNING  | SimplyHired non-200 for 'graduate analyst data': 403
+2026-10-04 14:41:48 | INFO     | SimplyHired unique → 0
+2026-10-04 14:41:48 | INFO     | unique jobs after merge: 992 (per source: jobicy=125, remotive=18, remoteok=99, arbeitnow=750, adzuna=0, simplyhired=0)
+2026-10-04 14:41:48 | INFO     | transformed 992 jobs (372 data-ish)
+2026-10-04 14:41:48 | INFO     | wrote 992 jobs to /home/runner/work/remote-job-market-pipeline/remote-job-market-pipeline/remote_jobs.db
+2026-10-04 14:41:48 | INFO     | csv → /home/runner/work/remote-job-market-pipeline/remote-job-market-pipeline/data/remote_jobs_tableau.csv (119 rows); junior UK → /home/runner/work/remote-job-market-pipeline/remote-job-market-pipeline/data/remote_jobs_junior_uk.csv (14 rows); full dump 992 rows at remote_jobs_tableau_all.csv
+2026-10-04 14:41:48 | INFO     | no TABLEAU_SERVER_URL — skipping publish. CSV is ready for Tableau Public (GitHub raw URL works fine).
+2026-10-04 14:41:48 | INFO     | source counts: {'jobicy': 125, 'remotive': 18, 'remoteok': 99, 'arbeitnow': 750, 'adzuna': 0, 'simplyhired': 0}
+2026-10-04 14:41:48 | INFO     | done — jobs=992 companies=2960 data_roles=372 tableau_rows=119 junior_uk_rows=14 top_skills=[('Excel', 15), ('Python', 13), ('SQL', 7), ('Power BI', 1), ('Snowflake', 1)]
