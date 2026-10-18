@@ -1048,3 +1048,38 @@
 2026-10-17 12:46:14 | INFO     | no TABLEAU_SERVER_URL — skipping publish. CSV is ready for Tableau Public (GitHub raw URL works fine).
 2026-10-17 12:46:14 | INFO     | source counts: {'jobicy': 131, 'remotive': 13, 'remoteok': 99, 'arbeitnow': 900, 'adzuna': 0, 'simplyhired': 0}
 2026-10-17 12:46:14 | INFO     | done — jobs=1143 companies=4171 data_roles=405 tableau_rows=131 junior_uk_rows=5 top_skills=[('Python', 14), ('Excel', 8), ('SQL', 7), ('dbt', 3), ('Snowflake', 2)]
+2026-10-18 13:04:25 | INFO     | pipeline start
+2026-10-18 13:04:25 | INFO     | DB_PATH=/home/runner/work/remote-job-market-pipeline/remote-job-market-pipeline/remote_jobs.db
+2026-10-18 13:04:25 | INFO     | GET https://jobicy.com/api/v2/remote-jobs {'count': 100}
+2026-10-18 13:04:25 | INFO     | Jobicy → 100 jobs
+2026-10-18 13:04:25 | INFO     | GET https://jobicy.com/api/v2/remote-jobs {'count': 100, 'tag': 'data'}
+2026-10-18 13:04:26 | INFO     | Jobicy tag=data → 100 jobs
+2026-10-18 13:04:26 | INFO     | GET https://remotive.com/api/remote-jobs {'category': 'data'}
+2026-10-18 13:04:26 | INFO     | Remotive {'category': 'data'} → 12 jobs
+2026-10-18 13:04:26 | INFO     | GET https://remotive.com/api/remote-jobs {'search': 'junior data analyst'}
+2026-10-18 13:04:26 | INFO     | Remotive {'search': 'junior data analyst'} → 12 jobs
+2026-10-18 13:04:26 | INFO     | GET https://remoteok.com/api
+2026-10-18 13:04:27 | INFO     | RemoteOK → 99 jobs
+2026-10-18 13:04:27 | INFO     | GET https://www.arbeitnow.com/api/job-board-api {'page': 1}
+2026-10-18 13:04:27 | INFO     | Arbeitnow page 1 → 300 jobs
+2026-10-18 13:04:27 | INFO     | GET https://www.arbeitnow.com/api/job-board-api {'page': 2}
+2026-10-18 13:04:27 | INFO     | Arbeitnow page 2 → 300 jobs
+2026-10-18 13:04:27 | INFO     | GET https://www.arbeitnow.com/api/job-board-api {'page': 3}
+2026-10-18 13:04:27 | INFO     | Arbeitnow page 3 → 300 jobs
+2026-10-18 13:04:28 | INFO     | ADZUNA_APP_ID / ADZUNA_APP_KEY not set — skipping Adzuna
+2026-10-18 13:04:28 | INFO     | GET https://www.simplyhired.co.uk/search {'q': 'graduate data analyst', 'l': 'United Kingdom'}
+2026-10-18 13:04:28 | WARNING  | SimplyHired non-200 for 'graduate data analyst': 403
+2026-10-18 13:04:28 | INFO     | GET https://www.simplyhired.co.uk/search {'q': 'junior data analyst', 'l': 'United Kingdom'}
+2026-10-18 13:04:29 | WARNING  | SimplyHired non-200 for 'junior data analyst': 403
+2026-10-18 13:04:29 | INFO     | GET https://www.simplyhired.co.uk/search {'q': 'entry level data analyst', 'l': 'United Kingdom'}
+2026-10-18 13:04:29 | WARNING  | SimplyHired non-200 for 'entry level data analyst': 403
+2026-10-18 13:04:29 | INFO     | GET https://www.simplyhired.co.uk/search {'q': 'graduate analyst data', 'l': 'United Kingdom'}
+2026-10-18 13:04:29 | WARNING  | SimplyHired non-200 for 'graduate analyst data': 403
+2026-10-18 13:04:29 | INFO     | SimplyHired unique → 0
+2026-10-18 13:04:29 | INFO     | unique jobs after merge: 1132 (per source: jobicy=123, remotive=12, remoteok=99, arbeitnow=898, adzuna=0, simplyhired=0)
+2026-10-18 13:04:29 | INFO     | transformed 1132 jobs (409 data-ish)
+2026-10-18 13:04:29 | INFO     | wrote 1132 jobs to /home/runner/work/remote-job-market-pipeline/remote-job-market-pipeline/remote_jobs.db
+2026-10-18 13:04:29 | INFO     | csv → /home/runner/work/remote-job-market-pipeline/remote-job-market-pipeline/data/remote_jobs_tableau.csv (120 rows); junior UK → /home/runner/work/remote-job-market-pipeline/remote-job-market-pipeline/data/remote_jobs_junior_uk.csv (9 rows); full dump 1132 rows at remote_jobs_tableau_all.csv
+2026-10-18 13:04:29 | INFO     | no TABLEAU_SERVER_URL — skipping publish. CSV is ready for Tableau Public (GitHub raw URL works fine).
+2026-10-18 13:04:29 | INFO     | source counts: {'jobicy': 123, 'remotive': 12, 'remoteok': 99, 'arbeitnow': 898, 'adzuna': 0, 'simplyhired': 0}
+2026-10-18 13:04:29 | INFO     | done — jobs=1132 companies=4244 data_roles=409 tableau_rows=120 junior_uk_rows=9 top_skills=[('Python', 13), ('SQL', 8), ('Excel', 7), ('dbt', 4), ('Snowflake', 2)]
